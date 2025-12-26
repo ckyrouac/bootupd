@@ -410,7 +410,10 @@ fn get_first_dir(path: &Utf8Path) -> Result<(Utf8PathBuf, String)> {
     Ok((first.into(), tmp))
 }
 
-/// Get dest efi path "shim/<ver>/EFI/fedora/shim.efi" -> "fedora/shim.efi"
+/// Get dest path for EFI or firmware files, relative to ESP root
+/// EFI source: "shim/<ver>/EFI/fedora/shim.efi" -> "EFI/fedora/shim.efi"
+/// Firmware source: "firmware/<ver>/firmware.bin" -> "firmware.bin"
+/// Already-transformed paths starting with "EFI" are left unchanged.
 #[cfg(any(
     target_arch = "x86_64",
     target_arch = "aarch64",
@@ -418,9 +421,24 @@ fn get_first_dir(path: &Utf8Path) -> Result<(Utf8PathBuf, String)> {
 ))]
 fn get_dest_efi_path(path: &Utf8Path) -> Utf8PathBuf {
     let parts: Vec<_> = path.iter().collect();
-    if parts.get(2).map(|c| *c == "EFI").unwrap_or(false) {
-        return parts.iter().skip(3).collect();
+
+    // Already a destination path (starts with EFI) - leave unchanged
+    if parts.first().map(|c| *c == "EFI").unwrap_or(false) {
+        return path.to_path_buf();
     }
+
+    // EFI source: <name>/<version>/EFI/<vendor>/file -> EFI/<vendor>/file
+    // Skip first 2 components (name/version), keep EFI prefix
+    if parts.get(2).map(|c| *c == "EFI").unwrap_or(false) {
+        return parts.iter().skip(2).collect();
+    }
+
+    // Firmware source: <name>/<version>/file -> file
+    // Only strip if we have at least 3 components (name/version/file)
+    if parts.len() >= 3 {
+        return parts.iter().skip(2).collect();
+    }
+
     path.to_path_buf()
 }
 
@@ -697,6 +715,7 @@ mod tests {
         );
         assert!(!a.join(relp).join("shim.x64").exists());
         // test apply from foo/1.0 and bar/2.0
+        // Source paths are transformed: foo/1.0/EFI/fedora/file -> EFI/fedora/file
         {
             let c = tmpdp.join("c");
             let foo = "foo/1.0/EFI/fedora";
@@ -704,19 +723,20 @@ mod tests {
             for p in [foo, bar] {
                 fs::create_dir_all(c.join(p))?;
             }
-            // change: "foo/1.0/EFI/fedora/grub.x64"
+            // change: "foo/1.0/EFI/fedora/grub.x64" -> "EFI/fedora/grub.x64"
             fs::write(c.join(foo).join("grub.x64"), "grub data 3")?;
-            // addition: "bar/2.0/EFI/new/newfile"
+            // addition: "bar/2.0/EFI/new/newfile" -> "EFI/new/newfile"
             fs::write(c.join(bar).join("newfile"), "filedata")?;
-            let a = openat::Dir::open(&a.join("EFI"))?;
+            // Open at ESP root (not EFI subdir) to match new path format
+            let a_dir = openat::Dir::open(&a)?;
             let c = openat::Dir::open(&c)?;
-            let ta = FileTree::new_from_dir(&a)?;
+            let ta = FileTree::new_from_dir(&a_dir)?;
             let tc = FileTree::new_from_dir(&c)?;
             let diff = ta.diff(&tc)?;
             assert_eq!(diff.changes.len(), 1);
             assert_eq!(diff.additions.len(), 1);
             assert_eq!(diff.count(), 3);
-            super::apply_diff(&c, &a, &diff, None)?;
+            super::apply_diff(&c, &a_dir, &diff, None)?;
         }
         assert_eq!(
             String::from_utf8(std::fs::read(a.join(relp).join("grub.x64"))?)?,
@@ -746,18 +766,28 @@ mod tests {
     #[test]
     fn test_get_dest_efi_path() -> Result<()> {
         let test_cases = [
-            ("foo/1.0/EFI/vendor/test.efi", "vendor/test.efi"),
+            // EFI source paths: strip <name>/<version>/, keep EFI/ prefix
+            ("foo/1.0/EFI/vendor/test.efi", "EFI/vendor/test.efi"),
+            ("shim/15.8/EFI/fedora/shimx64.efi", "EFI/fedora/shimx64.efi"),
+            // Firmware source paths: strip <name>/<version>/ prefix
+            ("firmware/1.0/firmware.bin", "firmware.bin"),
+            ("firmware/2.0/subdir/file.dat", "subdir/file.dat"),
+            // Already-transformed paths starting with EFI: left unchanged
+            ("EFI/fedora/shimx64.efi", "EFI/fedora/shimx64.efi"),
+            ("EFI/BOOT/BOOTX64.EFI", "EFI/BOOT/BOOTX64.EFI"),
+            // Short paths: left unchanged (fewer than 3 components)
             ("vendor/test.efi", "vendor/test.efi"),
-            ("EFI/vendor/test.efi", "EFI/vendor/test.efi"),
-            (
-                "bar/foo/1.0/EFI/vendor/test.efi",
-                "bar/foo/1.0/EFI/vendor/test.efi",
-            ),
+            ("file.bin", "file.bin"),
         ];
 
         for (input, expected) in test_cases {
             let path = Utf8Path::new(input);
-            assert_eq!(get_dest_efi_path(path), Utf8Path::new(expected));
+            assert_eq!(
+                get_dest_efi_path(path),
+                Utf8Path::new(expected),
+                "Failed for input: {}",
+                input
+            );
         }
         Ok(())
     }

@@ -341,13 +341,14 @@ impl Component for Efi {
         for esp in esp_devices {
             let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
 
-            let efidir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
-            validate_esp_fstype(&efidir)?;
+            // Apply diff to ESP root (paths include EFI/ prefix for EFI files)
+            let espdir = openat::Dir::open(destpath).context("opening ESP dir")?;
+            validate_esp_fstype(&espdir)?;
 
             // For adoption, we should only touch files that we know about.
-            let diff = updatef.relative_diff_to(&efidir)?;
+            let diff = updatef.relative_diff_to(&espdir)?;
             log::trace!("applying adoption diff: {}", &diff);
-            filetree::apply_diff(&updated, &efidir, &diff, None)
+            filetree::apply_diff(&updated, &espdir, &diff, None)
                 .context("applying filesystem changes")?;
 
             // Backup current config and install static config
@@ -359,13 +360,15 @@ impl Component for Efi {
                     );
                 } else {
                     println!("ostree repo 'sysroot.bootloader' config option is not set yet");
+                    // migrate_static_grub_config expects EFI directory
+                    let efidir = espdir.sub_dir("EFI").context("opening EFI subdir")?;
                     self.migrate_static_grub_config(rootcxt.path.as_str(), &efidir)?;
                 };
             }
 
             // Do the sync before unmount
-            fsfreeze_thaw_cycle(efidir.open_file(".")?)?;
-            drop(efidir);
+            fsfreeze_thaw_cycle(espdir.open_file(".")?)?;
+            drop(espdir);
             self.unmount().context("unmount after adopt")?;
         }
         Ok(Some(InstalledContent {
@@ -423,7 +426,17 @@ impl Component for Efi {
 
         let efi_path = if let Some(efi_components) = efi_comps {
             for efi in efi_components {
-                filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
+                match efi.component_type {
+                    ComponentType::Efi => {
+                        // Copy EFI directory to ESP (creates <ESP>/EFI/<vendor>/...)
+                        filetree::copy_dir_with_args(&src_dir, efi.path.as_str(), dest, OPTIONS)?;
+                    }
+                    ComponentType::Firmware => {
+                        // Copy firmware files to ESP root (use "/." suffix to copy contents)
+                        let src_contents = format!("{}{}.", efi.path, std::path::MAIN_SEPARATOR);
+                        filetree::copy_dir_with_args(&src_dir, &src_contents, dest, OPTIONS)?;
+                    }
+                }
             }
             EFILIB
         } else {
@@ -483,7 +496,8 @@ impl Component for Efi {
 
         for esp in esp_devices {
             let destpath = &self.ensure_mounted_esp(rootcxt.path.as_ref(), Path::new(&esp))?;
-            let destdir = openat::Dir::open(&destpath.join("EFI")).context("opening EFI dir")?;
+            // Apply diff to ESP root (paths include EFI/ prefix for EFI files)
+            let destdir = openat::Dir::open(destpath).context("opening ESP dir")?;
             validate_esp_fstype(&destdir)?;
             log::trace!("applying diff: {}", &diff);
             filetree::apply_diff(&updated, &destdir, &diff, None)
@@ -570,9 +584,10 @@ impl Component for Efi {
         for esp in esp_devices.iter() {
             let destpath = &self.ensure_mounted_esp(Path::new("/"), Path::new(&esp))?;
 
-            let efidir = openat::Dir::open(&destpath.join("EFI"))
-                .with_context(|| format!("opening EFI dir {}", destpath.display()))?;
-            let diff = currentf.relative_diff_to(&efidir)?;
+            // Validate against ESP root (paths include EFI/ prefix for EFI files)
+            let espdir = openat::Dir::open(destpath)
+                .with_context(|| format!("opening ESP dir {}", destpath.display()))?;
+            let diff = currentf.relative_diff_to(&espdir)?;
 
             for f in diff.changes.iter() {
                 errs.push(format!("Changed: {}", f));
@@ -581,7 +596,7 @@ impl Component for Efi {
                 errs.push(format!("Removed: {}", f));
             }
             assert_eq!(diff.additions.len(), 0);
-            drop(efidir);
+            drop(espdir);
             self.unmount().context("unmount after validate")?;
         }
 
@@ -733,14 +748,27 @@ fn find_file_recursive<P: AsRef<Path>>(dir: P, target_file: &str) -> Result<Vec<
     Ok(result)
 }
 
+/// Type of component in /usr/lib/efi
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ComponentType {
+    /// Traditional EFI files (copied under EFI/<vendor>/)
+    Efi,
+    /// Firmware files (copied to ESP root)
+    Firmware,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct EFIComponent {
     pub name: String,
     pub version: String,
-    path: Utf8PathBuf,
+    pub(crate) path: Utf8PathBuf,
+    pub component_type: ComponentType,
 }
 
-/// Get EFIComponents from e.g. usr/lib/efi, like "usr/lib/efi/<name>/<version>/EFI"
+/// Get EFIComponents from e.g. usr/lib/efi
+/// Supports two layouts:
+/// - EFI: "usr/lib/efi/<name>/<version>/EFI/<vendor>/..." → copied to ESP/EFI/<vendor>/
+/// - Firmware: "usr/lib/efi/<name>/<version>/file" → copied to ESP root
 fn get_efi_component_from_usr<'a>(
     sysroot: &'a Utf8Path,
     usr_path: &'a str,
@@ -748,34 +776,68 @@ fn get_efi_component_from_usr<'a>(
     let efilib_path = sysroot.join(usr_path);
     let skip_count = Utf8Path::new(usr_path).components().count();
 
-    let mut components: Vec<EFIComponent> = WalkDir::new(&efilib_path)
-        .min_depth(3) // <name>/<version>/EFI: so 3 levels down
-        .max_depth(3)
+    let mut components: Vec<EFIComponent> = Vec::new();
+
+    // Walk at depth 2 to find <name>/<version>/ directories
+    for entry in WalkDir::new(&efilib_path)
+        .min_depth(2)
+        .max_depth(2)
         .into_iter()
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            if !entry.file_type().is_dir() || entry.file_name() != "EFI" {
-                return None;
+        .filter_map(|e| e.ok())
+    {
+        if !entry.file_type().is_dir() {
+            continue;
+        }
+
+        let abs_path = entry.path();
+        let rel_path = match abs_path.strip_prefix(sysroot) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+        let utf8_rel_path = match Utf8PathBuf::from_path_buf(rel_path.to_path_buf()) {
+            Ok(p) => p,
+            Err(_) => continue,
+        };
+
+        let mut path_components = utf8_rel_path.components();
+        let name = match path_components.nth(skip_count) {
+            Some(c) => c.to_string(),
+            None => continue,
+        };
+        let version = match path_components.next() {
+            Some(c) => c.to_string(),
+            None => continue,
+        };
+
+        // Check if this is an EFI component (has EFI subdirectory)
+        let efi_subdir = abs_path.join("EFI");
+        let (component_type, path) = if efi_subdir.is_dir() {
+            (ComponentType::Efi, utf8_rel_path.join("EFI"))
+        } else {
+            // Check if there are any files directly in this directory (firmware component)
+            let has_files = std::fs::read_dir(abs_path)
+                .map(|entries| {
+                    entries
+                        .filter_map(|e| e.ok())
+                        .any(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+                })
+                .unwrap_or(false);
+            if has_files {
+                (ComponentType::Firmware, utf8_rel_path)
+            } else {
+                continue; // Skip empty directories
             }
+        };
 
-            let abs_path = entry.path();
-            let rel_path = abs_path.strip_prefix(sysroot).ok()?;
-            let utf8_rel_path = Utf8PathBuf::from_path_buf(rel_path.to_path_buf()).ok()?;
+        components.push(EFIComponent {
+            name,
+            version,
+            path,
+            component_type,
+        });
+    }
 
-            let mut components = utf8_rel_path.components();
-
-            let name = components.nth(skip_count)?.to_string();
-            let version = components.next()?.to_string();
-
-            Some(EFIComponent {
-                name,
-                version,
-                path: utf8_rel_path,
-            })
-        })
-        .collect();
-
-    if components.len() == 0 {
+    if components.is_empty() {
         return Ok(None);
     }
     components.sort_by(|a, b| a.name.cmp(&b.name));
@@ -975,11 +1037,13 @@ Boot0003* test";
                     name: "BAR".to_string(),
                     version: "1.1".to_string(),
                     path: Utf8PathBuf::from("usr/lib/efi/BAR/1.1/EFI"),
+                    component_type: ComponentType::Efi,
                 },
                 EFIComponent {
                     name: "FOO".to_string(),
                     version: "1.1".to_string(),
                     path: Utf8PathBuf::from("usr/lib/efi/FOO/1.1/EFI"),
+                    component_type: ComponentType::Efi,
                 },
             ])
         );
@@ -987,6 +1051,43 @@ Boot0003* test";
         std::fs::remove_dir_all(efi_path.join("FOO/1.1/EFI"))?;
         let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
         assert_eq!(efi_comps, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_firmware_component_from_usr() -> Result<()> {
+        let tmpdir: &tempfile::TempDir = &tempfile::tempdir()?;
+        let tpath = tmpdir.path();
+        let efi_path = tpath.join("usr/lib/efi");
+
+        // Create EFI component
+        std::fs::create_dir_all(efi_path.join("shim/15.8/EFI/fedora"))?;
+        std::fs::write(efi_path.join("shim/15.8/EFI/fedora/shim.efi"), "shim")?;
+
+        // Create firmware component (no EFI subdir, files directly in version dir)
+        std::fs::create_dir_all(efi_path.join("firmware/1.0"))?;
+        std::fs::write(efi_path.join("firmware/1.0/firmware.bin"), "fw")?;
+
+        let utf8_tpath =
+            Utf8Path::from_path(tpath).ok_or_else(|| anyhow::anyhow!("Path is not valid UTF-8"))?;
+        let efi_comps = get_efi_component_from_usr(utf8_tpath, EFILIB)?;
+
+        assert!(efi_comps.is_some());
+        let comps = efi_comps.unwrap();
+        assert_eq!(comps.len(), 2);
+
+        // Verify firmware component
+        let firmware = comps.iter().find(|c| c.name == "firmware").unwrap();
+        assert_eq!(firmware.component_type, ComponentType::Firmware);
+        assert_eq!(firmware.version, "1.0");
+        assert_eq!(firmware.path, Utf8PathBuf::from("usr/lib/efi/firmware/1.0"));
+
+        // Verify EFI component
+        let shim = comps.iter().find(|c| c.name == "shim").unwrap();
+        assert_eq!(shim.component_type, ComponentType::Efi);
+        assert_eq!(shim.version, "15.8");
+        assert_eq!(shim.path, Utf8PathBuf::from("usr/lib/efi/shim/15.8/EFI"));
+
         Ok(())
     }
 }
