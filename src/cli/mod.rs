@@ -6,6 +6,20 @@ use log::LevelFilter;
 mod bootupctl;
 mod bootupd;
 
+/// Development build version string with banner
+pub(crate) const DEV_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\n",
+    r#"
+****************************************
+*                                      *
+*  ⚠️  DEVELOPMENT BUILD ⚠️              *
+*      NOT FOR PRODUCTION              *
+*                                      *
+****************************************
+"#
+);
+
 /// Top-level multicall CLI.
 #[derive(Debug, Parser)]
 pub enum MultiCall {

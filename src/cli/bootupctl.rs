@@ -21,7 +21,7 @@ static SYSTEMD_PROPERTIES: &[&str] = &[
 
 /// `bootupctl` sub-commands.
 #[derive(Debug, Parser)]
-#[clap(name = "bootupctl", about = "Bootupd client application", version)]
+#[clap(name = "bootupctl", about = "Bootupd client application", version = super::DEV_VERSION)]
 pub struct CtlCommand {
     /// Verbosity level (higher is more verbose).
     #[clap(short = 'v', action = clap::ArgAction::Count, global = true)]
