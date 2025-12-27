@@ -371,6 +371,14 @@ impl Component for Efi {
             drop(espdir);
             self.unmount().context("unmount after adopt")?;
         }
+
+        // Also copy any Boot components to /boot (for RPi5 and similar platforms)
+        let boot_dir = rootcxt.path.join("boot");
+        if boot_dir.exists() {
+            copy_boot_components_to_boot(&rootcxt.path, boot_dir.as_std_path())
+                .context("copying Boot components to /boot")?;
+        }
+
         Ok(Some(InstalledContent {
             meta: updatemeta.clone(),
             filetree: Some(updatef),
@@ -435,6 +443,16 @@ impl Component for Efi {
                         // Copy firmware files to ESP root (use "/." suffix to copy contents)
                         let src_contents = format!("{}{}.", efi.path, std::path::MAIN_SEPARATOR);
                         filetree::copy_dir_with_args(&src_dir, &src_contents, dest, OPTIONS)?;
+                    }
+                    ComponentType::Boot => {
+                        // Copy boot files to /boot root (for RPi5 and similar platforms)
+                        // These need to be in /boot directly, not in the ESP
+                        let boot_dest = Path::new(dest_root).join("boot");
+                        let boot_dest_str = boot_dest.to_str().with_context(|| {
+                            format!("Invalid UTF-8 in boot path: {}", boot_dest.display())
+                        })?;
+                        let src_contents = format!("{}{}.", efi.path, std::path::MAIN_SEPARATOR);
+                        filetree::copy_dir_with_args(&src_dir, &src_contents, boot_dest_str, OPTIONS)?;
                     }
                 }
             }
@@ -507,6 +525,13 @@ impl Component for Efi {
             fsfreeze_thaw_cycle(destdir.open_file(".")?)?;
             drop(destdir);
             self.unmount().context("unmount after update")?;
+        }
+
+        // Also copy any Boot components to /boot (for RPi5 and similar platforms)
+        let boot_dir = rootcxt.path.join("boot");
+        if boot_dir.exists() {
+            copy_boot_components_to_boot(&rootcxt.path, boot_dir.as_std_path())
+                .context("copying Boot components to /boot")?;
         }
 
         let adopted_from = None;
@@ -755,6 +780,9 @@ pub enum ComponentType {
     Efi,
     /// Firmware files (copied to ESP root)
     Firmware,
+    /// Boot files (copied to /boot root, for platforms like RPi5 where
+    /// firmware needs files in /boot rather than the ESP)
+    Boot,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -811,8 +839,13 @@ fn get_efi_component_from_usr<'a>(
 
         // Check if this is an EFI component (has EFI subdirectory)
         let efi_subdir = abs_path.join("EFI");
+        // Check if this is a Boot component (has BOOT subdirectory)
+        let boot_subdir = abs_path.join("BOOT");
         let (component_type, path) = if efi_subdir.is_dir() {
             (ComponentType::Efi, utf8_rel_path.join("EFI"))
+        } else if boot_subdir.is_dir() {
+            // Boot component: files copied to /boot root (for RPi5 and similar platforms)
+            (ComponentType::Boot, utf8_rel_path.join("BOOT"))
         } else {
             // Check if there are any files directly in this directory (firmware component)
             let has_files = std::fs::read_dir(abs_path)
@@ -895,6 +928,42 @@ fn transfer_ostree_boot_to_usr(sysroot: &Path) -> Result<()> {
                 .context("Copying file to usr/lib/efi")?;
         }
     }
+    Ok(())
+}
+
+/// Copy Boot component files from usr/lib/efi to /boot
+/// This handles platforms like RPi5 where firmware needs files in /boot
+fn copy_boot_components_to_boot(sysroot: &Utf8Path, boot_dir: &Path) -> Result<()> {
+    let efi_components = get_efi_component_from_usr(sysroot, EFILIB)?;
+    let Some(components) = efi_components else {
+        return Ok(());
+    };
+
+    for component in components {
+        if component.component_type != ComponentType::Boot {
+            continue;
+        }
+
+        let src_path = sysroot.join(&component.path);
+        if !src_path.exists() {
+            continue;
+        }
+
+        log::debug!(
+            "Copying Boot component {} to {:?}",
+            component.name,
+            boot_dir
+        );
+
+        // Copy contents of the BOOT directory to /boot root
+        let src_contents = format!("{}{}.", component.path, std::path::MAIN_SEPARATOR);
+        let src_dir = openat::Dir::open(sysroot.as_std_path())?;
+        let boot_dest_str = boot_dir
+            .to_str()
+            .context("Invalid UTF-8 in boot path")?;
+        filetree::copy_dir_with_args(&src_dir, &src_contents, boot_dest_str, OPTIONS)?;
+    }
+
     Ok(())
 }
 
