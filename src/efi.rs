@@ -5,6 +5,7 @@
  */
 
 use std::cell::RefCell;
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -83,6 +84,16 @@ impl Efi {
 
             let st = rustix::fs::statfs(&path)?;
             if st.f_type == libc::MSDOS_SUPER_MAGIC {
+                // Verify this is actually a mount point, not just a subdirectory
+                // on a vfat mount. A mount point has a different device ID than
+                // its parent directory.
+                let path_dev = std::fs::metadata(&path)?.dev();
+                let parent_dev = std::fs::metadata(path.parent().unwrap_or(&path))?.dev();
+                if path_dev == parent_dev {
+                    // Same device as parent - this is a subdirectory, not a mount point
+                    log::debug!("Skipping {path:?}: vfat but not a mount point");
+                    continue;
+                }
                 util::ensure_writable_mount(&path)?;
                 found_mount = Some(path);
                 break;
@@ -389,19 +400,24 @@ impl Component for Efi {
         };
         log::debug!("Found metadata {}", meta.version);
 
-        // Let's attempt to use an already mounted ESP at the target
-        // dest_root if one is already mounted there in a known ESP location.
-        let destpath = if let Some(destdir) = self.get_mounted_esp(Path::new(dest_root))? {
+        // Determine the destination path for the ESP.
+        // If a device is explicitly specified, we must mount that device's ESP
+        // (unmounting any previously mounted ESP first to ensure we install to
+        // the correct device). If no device is specified, try to use an existing
+        // mounted ESP.
+        let destpath = if !device.is_empty() {
+            // Unmount any previously mounted ESP to ensure we install to the
+            // correct device. This is important for multi-device installs where
+            // each device has its own ESP.
+            self.unmount()?;
+
+            let esp_device = blockdev::get_esp_partition(device)?
+                .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device on {device}"))?;
+            self.mount_esp_device(Path::new(dest_root), Path::new(&esp_device))?
+        } else if let Some(destdir) = self.get_mounted_esp(Path::new(dest_root))? {
             destdir
         } else {
-            // Using `blockdev` to find the partition instead of partlabel because
-            // we know the target install toplevel device already.
-            if device.is_empty() {
-                anyhow::bail!("Device value not provided");
-            }
-            let esp_device = blockdev::get_esp_partition(device)?
-                .ok_or_else(|| anyhow::anyhow!("Failed to find ESP device"))?;
-            self.mount_esp_device(Path::new(dest_root), Path::new(&esp_device))?
+            anyhow::bail!("No device specified and no mounted ESP found");
         };
 
         let destd = &openat::Dir::open(&destpath)
