@@ -44,15 +44,12 @@ impl ConfigMode {
 pub(crate) fn install(
     source_root: &str,
     dest_root: &str,
-    device: Option<&str>,
+    devices: &[String],
     configs: ConfigMode,
     update_firmware: bool,
     target_components: Option<&[String]>,
     auto_components: bool,
 ) -> Result<()> {
-    // TODO: Change this to an Option<&str>; though this probably balloons into having
-    // DeviceComponent and FileBasedComponent
-    let device = device.unwrap_or("");
     let source_root_dir = openat::Dir::open(source_root).context("Opening source root")?;
     SavedState::ensure_not_present(dest_root)
         .context("failed to install, invalid re-install attempted")?;
@@ -84,8 +81,8 @@ pub(crate) fn install(
     let mut state = SavedState::default();
     let mut installed_efi_vendor = None;
     for &component in target_components.iter() {
-        // skip for BIOS if device is empty
-        if component.name() == "BIOS" && device.is_empty() {
+        // skip for BIOS if no devices specified
+        if component.name() == "BIOS" && devices.is_empty() {
             println!(
                 "Skip installing component {} without target device",
                 component.name()
@@ -102,15 +99,40 @@ pub(crate) fn install(
             continue;
         }
 
-        let meta = component
-            .install(&source_root, dest_root, device, update_firmware)
-            .with_context(|| format!("installing component {}", component.name()))?;
-        log::info!("Installed {} {}", component.name(), meta.meta.version);
-        state.installed.insert(component.name().into(), meta);
-        // Yes this is a hack...the Component thing just turns out to be too generic.
-        if let Some(vendor) = component.get_efi_vendor(&Path::new(source_root))? {
-            assert!(installed_efi_vendor.is_none());
-            installed_efi_vendor = Some(vendor);
+        // Install to each device. If no devices specified, install once with empty device
+        // (for EFI, this allows auto-detection via mounted ESP).
+        let devices_to_install: Vec<&str> = if devices.is_empty() {
+            vec![""]
+        } else {
+            devices.iter().map(|s| s.as_str()).collect()
+        };
+
+        for device in devices_to_install {
+            let meta = component
+                .install(source_root, dest_root, device, update_firmware)
+                .with_context(|| {
+                    format!(
+                        "installing component {} to device {}",
+                        component.name(),
+                        if device.is_empty() { "(auto)" } else { device }
+                    )
+                })?;
+            log::info!(
+                "Installed {} {} to {}",
+                component.name(),
+                meta.meta.version,
+                if device.is_empty() { "(auto)" } else { device }
+            );
+            // Only record state once per component (use first device's metadata)
+            if !state.installed.contains_key(component.name()) {
+                state.installed.insert(component.name().into(), meta);
+            }
+            // Yes this is a hack...the Component thing just turns out to be too generic.
+            if installed_efi_vendor.is_none() {
+                if let Some(vendor) = component.get_efi_vendor(Path::new(source_root))? {
+                    installed_efi_vendor = Some(vendor);
+                }
+            }
         }
     }
     let sysroot = &openat::Dir::open(dest_root)?;

@@ -46,9 +46,10 @@ pub struct InstallOpts {
     #[clap(value_parser)]
     dest_root: String,
 
-    /// Target device, used by bios bootloader installation
-    #[clap(long)]
-    device: Option<String>,
+    /// Target device(s) for bootloader installation. Can be specified multiple
+    /// times to install to multiple devices (e.g., for multi-disk RAID/LVM setups).
+    #[clap(long, action = clap::ArgAction::Append)]
+    device: Vec<String>,
 
     /// Enable installation of the built-in static config files
     #[clap(long)]
@@ -113,7 +114,7 @@ impl DCommand {
         bootupd::install(
             &opts.src_root,
             &opts.dest_root,
-            opts.device.as_deref(),
+            &opts.device,
             configmode,
             opts.update_firmware,
             opts.components.as_deref(),
