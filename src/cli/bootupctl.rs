@@ -19,9 +19,21 @@ static SYSTEMD_PROPERTIES: &[&str] = &[
     "MountFlags=slave",
 ];
 
+/// Build version string, includes LOCAL BUILD marker if built with LOCAL_BUILD env var
+fn build_version() -> &'static str {
+    let version = env!("CARGO_PKG_VERSION");
+    match option_env!("LOCAL_BUILD") {
+        Some(ts) => {
+            let s = format!("*** LOCAL BUILD {} *** {}", ts, version);
+            Box::leak(s.into_boxed_str())
+        }
+        None => version,
+    }
+}
+
 /// `bootupctl` sub-commands.
 #[derive(Debug, Parser)]
-#[clap(name = "bootupctl", about = "Bootupd client application", version)]
+#[clap(name = "bootupctl", about = "Bootupd client application", version = build_version())]
 pub struct CtlCommand {
     /// Verbosity level (higher is more verbose).
     #[clap(short = 'v', action = clap::ArgAction::Count, global = true)]
