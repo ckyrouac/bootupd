@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::bootupd::{self, ConfigMode};
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -48,8 +50,13 @@ pub struct InstallOpts {
 
     /// Target device(s) for bootloader installation. Can be specified multiple
     /// times to install to multiple devices (e.g., for multi-disk RAID/LVM setups).
-    #[clap(long, action = clap::ArgAction::Append)]
+    #[clap(long, action = clap::ArgAction::Append, conflicts_with = "filesystem")]
     device: Vec<String>,
+
+    /// Filesystem path to inspect for backing devices. Bootupd will walk up the
+    /// device hierarchy to find physical disks and install to all ESPs found.
+    #[clap(long)]
+    filesystem: Option<String>,
 
     /// Enable installation of the built-in static config files
     #[clap(long)]
@@ -111,10 +118,18 @@ impl DCommand {
         } else {
             ConfigMode::None
         };
+
+        // Resolve devices from filesystem if specified
+        let devices = if let Some(ref fs_path) = opts.filesystem {
+            crate::blockdev::get_backing_devices(Path::new(fs_path))?
+        } else {
+            opts.device
+        };
+
         bootupd::install(
             &opts.src_root,
             &opts.dest_root,
-            &opts.device,
+            &devices,
             configmode,
             opts.update_firmware,
             opts.components.as_deref(),

@@ -36,6 +36,40 @@ pub fn get_devices<P: AsRef<Path>>(target_root: P) -> Result<Vec<String>> {
     Ok(parent_devices)
 }
 
+/// Walk up the block device hierarchy from a filesystem path to find physical backing devices.
+///
+/// Examples:
+///   /dev/sda3 -> /dev/sda (single disk)
+///   /dev/mapper/vg-lv -> /dev/sda, /dev/sdb (LVM across two disks)
+pub fn get_backing_devices<P: AsRef<Path>>(path: P) -> Result<Vec<String>> {
+    let path = path.as_ref();
+    get_backing_devices_impl(path).with_context(|| format!("Getting backing devices from filesystem {:?}", path))
+}
+
+fn get_backing_devices_impl(path: &Path) -> Result<Vec<String>> {
+    let dir = openat::Dir::open(path)
+        .with_context(|| format!("Opening {}", path.display()))?;
+    let fsinfo = crate::filesystem::inspect_filesystem(&dir, ".")?;
+
+    // Walk up device hierarchy until we find physical disks
+    let mut dev = fsinfo.source;
+    loop {
+        log::debug!("Finding parents for {dev}");
+        let parents = bootc_internal_blockdev::find_parent_devices(&dev)?;
+        if parents.is_empty() {
+            // Reached a physical disk
+            break Ok(vec![dev]);
+        }
+        if parents.len() > 1 {
+            // Multi-device (e.g., LVM across disks) - return all
+            log::debug!("Found multiple parent devices: {:?}", parents);
+            break Ok(parents);
+        }
+        // Single parent - keep walking up
+        dev = parents.into_iter().next().unwrap();
+    }
+}
+
 /// Find esp partition on the same device
 /// using sfdisk to get partitiontable
 pub fn get_esp_partition(device: &str) -> Result<Option<String>> {
