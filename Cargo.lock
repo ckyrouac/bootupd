@@ -142,11 +142,9 @@ dependencies = [
 [[package]]
 name = "bootc-internal-blockdev"
 version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3136c26ac5666414667ea27e3383ec7de265e20ff2ca5f61ae38c6e0c96345fb"
 dependencies = [
  "anyhow",
- "bootc-internal-utils",
+ "bootc-internal-utils 0.1.0",
  "camino",
  "fn-error-context",
  "libc",
@@ -157,6 +155,25 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "bootc-internal-utils"
+version = "0.1.0"
+dependencies = [
+ "anstream",
+ "anyhow",
+ "chrono",
+ "owo-colors",
+ "rustix 1.1.3",
+ "serde",
+ "serde_json",
+ "shlex",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-journald",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -186,7 +203,7 @@ version = "0.2.32"
 dependencies = [
  "anyhow",
  "bootc-internal-blockdev",
- "bootc-internal-utils",
+ "bootc-internal-utils 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "camino",
  "cap-std-ext",
  "chrono",

@@ -52,22 +52,7 @@ fn get_backing_devices_impl(path: &Path) -> Result<Vec<String>> {
     let fsinfo = crate::filesystem::inspect_filesystem(&dir, ".")?;
 
     // Walk up device hierarchy until we find physical disks
-    let mut dev = fsinfo.source;
-    loop {
-        log::debug!("Finding parents for {dev}");
-        let parents = bootc_internal_blockdev::find_parent_devices(&dev)?;
-        if parents.is_empty() {
-            // Reached a physical disk
-            break Ok(vec![dev]);
-        }
-        if parents.len() > 1 {
-            // Multi-device (e.g., LVM across disks) - return all
-            log::debug!("Found multiple parent devices: {:?}", parents);
-            break Ok(parents);
-        }
-        // Single parent - keep walking up
-        dev = parents.into_iter().next().unwrap();
-    }
+    bootc_internal_blockdev::find_backing_devices(&fsinfo.source)
 }
 
 /// Find esp partition on the same device
