@@ -107,6 +107,28 @@ pub(crate) fn install(
             devices.iter().map(|s| s.as_str()).collect()
         };
 
+        // For EFI component with multiple devices, filter to only devices with ESPs
+        // (not all backing devices in a multi-device setup have ESPs)
+        let devices_to_install: Vec<&str> = if component.name() == "EFI" && devices_to_install.len() > 1 {
+            let mut devices_with_esp = Vec::new();
+            for device in &devices_to_install {
+                if device.is_empty() {
+                    // Empty device means auto-detect, always include
+                    devices_with_esp.push(*device);
+                } else if let Ok(Some(_)) = crate::blockdev::get_esp_partition(device) {
+                    devices_with_esp.push(*device);
+                } else {
+                    log::debug!("Skipping device {} for EFI component: no ESP partition found", device);
+                }
+            }
+            if devices_with_esp.is_empty() {
+                anyhow::bail!("No ESP partitions found on any backing device");
+            }
+            devices_with_esp
+        } else {
+            devices_to_install
+        };
+
         for device in devices_to_install {
             let meta = component
                 .install(source_root, dest_root, device, update_firmware)
