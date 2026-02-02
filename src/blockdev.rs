@@ -52,7 +52,7 @@ fn get_backing_devices_impl(path: &Path) -> Result<Vec<String>> {
     let fsinfo = crate::filesystem::inspect_filesystem(&dir, ".")?;
 
     // Walk up device hierarchy until we find physical disks
-    bootc_internal_blockdev::find_backing_devices(&fsinfo.source)
+    bootc_internal_blockdev::find_parent_devices(&fsinfo.source)
 }
 
 /// Find esp partition on the same device
