@@ -529,6 +529,8 @@ pub(crate) fn print_status(status: &Status) -> Result<()> {
 pub struct RootContext {
     pub sysroot: openat::Dir,
     pub path: Utf8PathBuf,
+    
+    // root devices for the system
     pub devices: Vec<String>,
 }
 
@@ -546,16 +548,8 @@ impl RootContext {
 fn prep_before_update() -> Result<RootContext> {
     let path = "/";
     let sysroot = openat::Dir::open(path).context("Opening root dir")?;
-    let cap_sysroot =
-        cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
-            .context("Opening root dir")?;
-    let device = list_dev_by_dir(&cap_sysroot)?;
-    let devices = device
-        .find_all_roots()?
-        .iter()
-        .map(|d| d.path())
-        .collect();
-    Ok(RootContext::new(sysroot, path, devices))
+    let parent_devices = crate::blockdev::get_devices("/").context("get parent devices")?;
+    Ok(RootContext::new(sysroot, path, parent_devices))
 }
 
 pub(crate) fn client_run_update() -> Result<()> {
