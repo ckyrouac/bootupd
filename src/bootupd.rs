@@ -25,6 +25,9 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
+use bootc_internal_blockdev::list_dev_by_dir;
+use cap_std_ext::cap_std;
+
 pub(crate) enum ConfigMode {
     None,
     Static,
@@ -543,7 +546,15 @@ impl RootContext {
 fn prep_before_update() -> Result<RootContext> {
     let path = "/";
     let sysroot = openat::Dir::open(path).context("Opening root dir")?;
-    let devices = crate::blockdev::get_devices(path).context("get parent devices")?;
+    let cap_sysroot =
+        cap_std::fs::Dir::open_ambient_dir(path, cap_std::ambient_authority())
+            .context("Opening root dir")?;
+    let device = list_dev_by_dir(&cap_sysroot)?;
+    let devices = device
+        .find_all_roots()?
+        .iter()
+        .map(|d| d.path())
+        .collect();
     Ok(RootContext::new(sysroot, path, devices))
 }
 
