@@ -145,10 +145,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bootc-internal-utils 0.1.0",
+ "bootc-mount",
  "camino",
+ "cap-std-ext",
  "fn-error-context",
  "libc",
- "regex",
  "rustix 1.1.3",
  "serde",
  "serde_json",
@@ -163,6 +164,7 @@ version = "0.1.0"
 dependencies = [
  "anstream",
  "anyhow",
+ "cap-std-ext",
  "chrono",
  "owo-colors",
  "rustix 1.1.3",
@@ -195,6 +197,22 @@ dependencies = [
  "tracing",
  "tracing-journald",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "bootc-mount"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "bootc-internal-utils 0.1.0",
+ "camino",
+ "cap-std-ext",
+ "fn-error-context",
+ "libc",
+ "rustix 1.1.3",
+ "serde",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -282,6 +300,7 @@ version = "3.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3dbd3e8e8d093d6ccb4b512264869e1281cdb032f7940bd50b2894f96f25609"
 dependencies = [
+ "camino",
  "cap-primitives",
  "io-extras",
  "io-lifetimes",
@@ -306,6 +325,7 @@ version = "3.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffa1c0edc4958d742bab2e903e52f93ccee482072680e08d6ce0784873e65b1"
 dependencies = [
+ "camino",
  "cap-std",
  "rand",
  "rustix 0.38.44",
