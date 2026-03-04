@@ -122,7 +122,21 @@ impl Component for Bios {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
 
-        self.run_grub_install(dest_root, &device.path())?;
+        // grub2-install for BIOS requires the whole disk device (e.g.
+        // /dev/vdb), not a partition.  The caller may pass a partition
+        // (e.g. the ESP /dev/vdb2), so resolve to the parent disk.
+        let Some(bios_devices) = device.find_colocated_bios_boot()? else {
+            anyhow::bail!(
+                "Failed to find a BIOS-bootable parent disk for device {}",
+                device.path()
+            );
+        };
+
+        for parent in bios_devices {
+            self.run_grub_install(dest_root, &parent.require_single_root()?.path())
+                .with_context(|| format!("installing GRUB on {}", parent.path()))?;
+            log::debug!("Installed grub modules on {}", parent.path());
+        }
         Ok(InstalledContent {
             meta,
             filetree: None,
@@ -222,9 +236,12 @@ impl Component for Bios {
             return Ok(None);
         };
 
-        for parent in rootcxt.devices.iter() {
-            self.run_grub_install(rootcxt.path.as_str(), &parent)?;
-            log::debug!("Installed grub modules on {parent}");
+        // Install grub onto each parent (whole-disk) device. For BIOS boot on
+        // multi-disk setups (e.g. RAID), grub must be written to every backing
+        // disk's MBR/BIOS-boot partition so the system can boot from any one.
+        for parent in rootcxt.device.find_all_roots()? {
+            self.run_grub_install(rootcxt.path.as_str(), &parent.path())?;
+            log::debug!("Installed grub modules on {}", parent.path());
         }
 
         if with_static_config {
@@ -259,9 +276,9 @@ impl Component for Bios {
             .query_update(&rootcxt.sysroot)?
             .expect("update available");
 
-        for parent in rootcxt.devices.iter() {
-            self.run_grub_install(rootcxt.path.as_str(), &parent)?;
-            log::debug!("Installed grub modules on {parent}");
+        for parent in rootcxt.device.find_all_roots()? {
+            self.run_grub_install(rootcxt.path.as_str(), &parent.path())?;
+            log::debug!("Installed grub modules on {}", parent.path());
         }
 
         let adopted_from = None;
@@ -272,7 +289,7 @@ impl Component for Bios {
         })
     }
 
-    fn validate(&self, _: &InstalledContent) -> Result<ValidationResult> {
+    fn validate(&self, _: &InstalledContent, _device: &Device) -> Result<ValidationResult> {
         Ok(ValidationResult::Skip)
     }
 
