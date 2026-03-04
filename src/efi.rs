@@ -594,8 +594,7 @@ impl Component for Efi {
         Ok(content_metadata)
     }
 
-    fn validate(&self, current: &InstalledContent) -> Result<ValidationResult> {
-        let device = bootc_internal_blockdev::list_dev(Utf8Path::new("/").into())?;
+    fn validate(&self, current: &InstalledContent, device: &Device) -> Result<ValidationResult> {
         let esp_devices = device.find_colocated_esps()?;
         if !is_efi_booted()? && esp_devices.is_none() {
             return Ok(ValidationResult::Skip);

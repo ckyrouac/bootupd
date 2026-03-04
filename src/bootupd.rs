@@ -112,15 +112,21 @@ pub(crate) fn install(
         let devices_to_install: Vec<Option<&Device>> = if devices.is_empty() {
             // No devices specified: install once with auto-detection (None).
             vec![None]
-        } else if component.name() == "EFI" && devices.len() > 1 {
-            // For EFI with multiple devices, only install to those with ESPs.
+        } else if component.name() == "EFI" {
+            // For EFI, only install to devices that have an ESP partition.
             let with_esp: Vec<Option<&Device>> = devices
                 .iter()
-                .filter(|dev| dev.find_partition_of_esp().is_ok())
+                .filter(|dev| match dev.find_partition_of_esp() {
+                    Ok(_) => true,
+                    Err(e) => {
+                        log::warn!("Skipping device {} for EFI: {:#}", dev.path(), e);
+                        false
+                    }
+                })
                 .map(|dev| Some(dev))
                 .collect();
             if with_esp.is_empty() {
-                anyhow::bail!("No ESP partitions found on any backing device");
+                anyhow::bail!("No ESP partitions found on any specified device");
             }
             with_esp
         } else {
@@ -412,7 +418,8 @@ pub(crate) fn validate(name: &str) -> Result<ValidationResult> {
     let Some(inst) = state.installed.get(name) else {
         anyhow::bail!("Component {} is not installed", name);
     };
-    component.validate(inst)
+    let device = bootc_internal_blockdev::list_dev(Utf8Path::new("/"))?;
+    component.validate(inst, &device)
 }
 
 pub(crate) fn status() -> Result<Status> {
@@ -556,8 +563,10 @@ pub struct RootContext {
     pub sysroot: openat::Dir,
     pub path: Utf8PathBuf,
 
-    // The block device backing the root filesystem.
-    // This is used to determine the device to install to for components that need it, and also passed to component update/adoption logic which may need it for validation or other purposes.
+    /// The block device backing the root filesystem.
+    ///
+    /// Used to determine the device to install to for components that need
+    /// it, and passed to component update/adoption logic for validation.
     pub device: Device,
 }
 

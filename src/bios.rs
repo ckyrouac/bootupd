@@ -275,7 +275,7 @@ impl Component for Bios {
         })
     }
 
-    fn validate(&self, _: &InstalledContent) -> Result<ValidationResult> {
+    fn validate(&self, _: &InstalledContent, _device: &Device) -> Result<ValidationResult> {
         Ok(ValidationResult::Skip)
     }
 
