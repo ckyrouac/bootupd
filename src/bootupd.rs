@@ -107,15 +107,53 @@ pub(crate) fn install(
             continue;
         }
 
-        let meta = component
-            .install(&source_root, dest_root, device, update_firmware)
-            .with_context(|| format!("installing component {}", component.name()))?;
-        log::info!("Installed {} {}", component.name(), meta.meta.version);
-        state.installed.insert(component.name().into(), meta);
-        // Yes this is a hack...the Component thing just turns out to be too generic.
-        if let Some(vendor) = component.get_efi_vendor(&Path::new(source_root))? {
-            assert!(installed_efi_vendor.is_none());
-            installed_efi_vendor = Some(vendor);
+        // Determine which devices to install to. For EFI, filter to only
+        // devices that have an ESP partition.
+        let devices_to_install: Vec<Option<&Device>> = if devices.is_empty() {
+            // No devices specified: install once with auto-detection (None).
+            vec![None]
+        } else if component.name() == "EFI" && devices.len() > 1 {
+            // For EFI with multiple devices, only install to those with ESPs.
+            let with_esp: Vec<Option<&Device>> = devices
+                .iter()
+                .filter(|dev| dev.find_partition_of_esp().is_ok())
+                .map(|dev| Some(dev))
+                .collect();
+            if with_esp.is_empty() {
+                anyhow::bail!("No ESP partitions found on any backing device");
+            }
+            with_esp
+        } else {
+            devices.iter().map(|dev| Some(dev)).collect()
+        };
+
+        for device in &devices_to_install {
+            let device_desc = device.map_or("(auto)".to_string(), |d| d.path());
+            let meta = component
+                .install(source_root, dest_root, *device, update_firmware)
+                .with_context(|| {
+                    format!(
+                        "installing component {} to device {}",
+                        component.name(),
+                        device_desc,
+                    )
+                })?;
+            log::info!(
+                "Installed {} {} to {}",
+                component.name(),
+                meta.meta.version,
+                device_desc,
+            );
+            // Only record state once per component (use first device's metadata)
+            if !state.installed.contains_key(component.name()) {
+                state.installed.insert(component.name().into(), meta);
+            }
+            // Yes this is a hack...the Component thing just turns out to be too generic.
+            if installed_efi_vendor.is_none() {
+                if let Some(vendor) = component.get_efi_vendor(Path::new(source_root))? {
+                    installed_efi_vendor = Some(vendor);
+                }
+            }
         }
     }
     let sysroot = &openat::Dir::open(dest_root)?;

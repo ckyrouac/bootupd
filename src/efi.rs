@@ -86,6 +86,18 @@ impl Efi {
 
             let st = rustix::fs::statfs(&path)?;
             if st.f_type == libc::MSDOS_SUPER_MAGIC {
+                // Verify this is actually a mount point, not just a subdirectory
+                // on a vfat filesystem. Compare device IDs: a mount point has a
+                // different device than its parent. Without this check, a vfat
+                // subdirectory (e.g. /boot/efi on a vfat /boot) could be
+                // misidentified as a mounted ESP.
+                let path_dev = std::fs::metadata(&path)?.dev();
+                let parent_dev = std::fs::metadata(path.parent().unwrap_or(&path))?.dev();
+                if path_dev == parent_dev {
+                    // Same device as parent - this is a subdirectory, not a mount point
+                    log::debug!("Skipping {path:?}: vfat but not a mount point");
+                    continue;
+                }
                 util::ensure_writable_mount(&path)?;
                 found_mount = Some(path);
                 break;
