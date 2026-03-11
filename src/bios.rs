@@ -122,21 +122,9 @@ impl Component for Bios {
             anyhow::bail!("No update metadata for component {} found", self.name());
         };
 
-        // grub2-install for BIOS requires the whole disk device (e.g.
-        // /dev/vdb), not a partition.  The caller may pass a partition
-        // (e.g. the ESP /dev/vdb2), so resolve to the parent disk.
-        let Some(bios_devices) = device.find_colocated_bios_boot()? else {
-            anyhow::bail!(
-                "Failed to find a BIOS-bootable parent disk for device {}",
-                device.path()
-            );
-        };
+        self.run_grub_install(dest_root, &device.path())
+            .with_context(|| format!("installing GRUB on {}", device.path()))?;
 
-        for parent in bios_devices {
-            self.run_grub_install(dest_root, &parent.require_single_root()?.path())
-                .with_context(|| format!("installing GRUB on {}", parent.path()))?;
-            log::debug!("Installed grub modules on {}", parent.path());
-        }
         Ok(InstalledContent {
             meta,
             filetree: None,
